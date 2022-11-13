@@ -147,7 +147,9 @@ class Discriminator(torch.nn.Module):
                                 activation='linear', up=2)
             setattr(self, f'b{res}_dec', block)
 
-    def forward(self, img, c, **block_kwargs):
+        self.b_dec_aux = Conv2dLayer(in_channels, 256, kernel_size=dec_kernel_size, activation='linear', up=2)
+
+    def forward(self, img, c, aux_fmap=False, **block_kwargs):
         x = None
         feats = {}
         for res in self.block_resolutions:
@@ -163,15 +165,19 @@ class Discriminator(torch.nn.Module):
 
         # Run decoder part
         fmaps = {}
+        last_dec_input = None
         for idx, res in enumerate(self.dec_resolutions):
             block = getattr(self, f'b{res}_dec')
             if idx == 0:
                 y = feats[res // 2]
             else:
                 y = torch.cat([y, feats[res // 2]], dim=1)
+            last_dec_input = y
             y = block(y)
             fmaps[res] = y
 
-        return logits, fmaps
+        return logits, fmaps, self.b_dec_aux(last_dec_input)
+        #else:
+        #    return logits, fmaps
 
 #----------------------------------------------------------------------------

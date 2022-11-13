@@ -162,7 +162,15 @@ class ImageFolderDataset(Dataset):
 
         if os.path.isdir(self._path):
             self._type = 'dir'
-            self._all_fnames = {os.path.relpath(os.path.join(root, fname), start=self._path) for root, _dirs, files in os.walk(self._path) for fname in files}
+            # self._all_fnames = {os.path.relpath(os.path.join(root, fname), start=self._path) for root, _dirs, files in os.walk(self._path) for fname in files}
+            self._all_fnames = []
+            print_every = 100000
+            with os.scandir(self._path) as it:
+                for i, entry in enumerate(it):
+                    self._all_fnames.append(os.path.relpath(entry.path, start=self._path))
+                    if (i + 1) % print_every == 0:
+                        print(f'Loaded {i + 1} items.')
+
         elif self._file_ext(self._path) == '.zip':
             self._type = 'zip'
             self._all_fnames = set(self._get_zipfile().namelist())

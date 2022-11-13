@@ -13,7 +13,7 @@ from training.loss import Loss
 
 
 class StyleGAN2GGDRLoss(Loss):
-    def __init__(self, device, G_mapping, G_synthesis, D, augment_pipe=None, style_mixing_prob=0.9, r1_gamma=10, pl_batch_shrink=2, pl_decay=0.01, pl_weight=2, ggdr_res=64):
+    def __init__(self, device, G_mapping, G_synthesis, D, augment_pipe=None, P=None, style_mixing_prob=0.9, r1_gamma=10, pl_batch_shrink=2, pl_decay=0.01, pl_weight=2, ggdr_res=64):
         super().__init__()
         self.device = device
         self.G_mapping = G_mapping
@@ -26,6 +26,7 @@ class StyleGAN2GGDRLoss(Loss):
         self.pl_decay = pl_decay
         self.pl_weight = pl_weight
         self.pl_mean = torch.zeros([], device=device)
+        self.parser = P
         self.ggdr_res = [ggdr_res]
 
         self.criterion = torch.nn.CrossEntropyLoss().to(self.device)
@@ -53,12 +54,18 @@ class StyleGAN2GGDRLoss(Loss):
             aug_img = img
         return aug_img, gfeats
 
-    def run_D(self, img, c, gfeats=None, sync=None):
+    def run_D(self, img, c, gfeats=None, sync=None, aux_fmap=False):
         aug_img, gfeats = self.run_aug_if_needed(img, gfeats)
         with misc.ddp_sync(self.D, sync):
-            logits, out = self.D(aug_img, c)
+            if aux_fmap:
+                logits, out, aux_f = self.D(aug_img, c, aux_fmap=aux_fmap)
+            else:
+                logits, out = self.D(aug_img, c)
 
-        return logits, out, aug_img, gfeats
+        if aux_fmap:
+            return logits, out, aug_img, gfeats, aux_f
+        else:
+            return logits, out, aug_img, gfeats
 
     def accumulate_gradients(self, phase, real_img, real_c, gen_z, gen_c, sync, gain):
         assert phase in ['Gmain', 'Greg', 'Gboth', 'Dmain', 'Dreg', 'Dboth']
@@ -71,14 +78,16 @@ class StyleGAN2GGDRLoss(Loss):
         if do_Gmain:
             with torch.autograd.profiler.record_function('Gmain_forward'):
                 gen_img, _gen_ws, _gen_feat = self.run_G(gen_z, gen_c, sync=(sync and not do_Gpl))
-                gen_logits, _recon_gen_fmaps, _, _ = self.run_D(gen_img, gen_c, sync=False)
+                gen_logits, _recon_gen_fmaps, _, _, aux_D_fmap = self.run_D(gen_img, gen_c, aux_fmap=True, sync=False)
                 training_stats.report('Loss/scores/fake', gen_logits)
                 training_stats.report('Loss/signs/fake', gen_logits.sign())
 
                 loss_Gmain = torch.nn.functional.softplus(-gen_logits)
                 training_stats.report('Loss/G/loss', loss_Gmain)
+
+                loss_not_used = aux_D_fmap[:, 0, 0, 0] * 0 + _recon_gen_fmaps[max(_recon_gen_fmaps.keys())][:, 0, 0, 0] * 0
             with torch.autograd.profiler.record_function('Gmain_backward'):
-                loss_Gmain.mean().mul(gain).backward()
+                (loss_Gmain + loss_not_used).mean().mul(gain).backward()
 
         # Gpl: Apply path length regularization.
         if do_Gpl:
@@ -104,15 +113,24 @@ class StyleGAN2GGDRLoss(Loss):
                 # recon fake features and w
                 gen_img, _gen_ws, gen_fmaps = self.run_G(gen_z, gen_c, sync=sync)
 
-                aug_gen_logits, aug_recon_gen_fmaps, aug_gen_img, aug_fmaps = \
-                    self.run_D(gen_img, gen_c, gen_fmaps, sync=sync)
+                aug_gen_logits, aug_recon_gen_fmaps, aug_gen_img, aug_fmaps, aux_D_fmap = \
+                    self.run_D(gen_img, gen_c, gen_fmaps, aux_fmap=True, sync=sync)
 
                 loss_gan_gen = torch.nn.functional.softplus(aug_gen_logits) + \
                     aug_recon_gen_fmaps[max(aug_recon_gen_fmaps.keys())][:, 0, 0, 0] * 0
 
                 loss_gen_reg = self.get_ggdr_reg(self.ggdr_res, aug_recon_gen_fmaps, aug_fmaps)
 
-                loss_Dmain = loss_gan_gen + loss_gen_reg
+                if self.parser is not None:
+                    with torch.no_grad():
+                        gen_img = F.interpolate(gen_img.detach(), (512, 512), mode='bilinear', align_corners=True)
+                        parser_fmap = self.parser(gen_img)[-1].detach()
+                    loss_Daux = self.cosine_distance(parser_fmap, aux_D_fmap) * 10
+                    training_stats.report(f'Loss/D/aux_g', loss_Daux)
+                else:
+                    loss_Daux = aux_D_fmap[:, 0, 0, 0] * 0
+
+                loss_Dmain = loss_gan_gen + loss_gen_reg + loss_Daux
 
                 training_stats.report('Loss/D/loss_gan_gen', loss_gan_gen)
                 training_stats.report('Loss/D/loss_gen_reg', loss_gen_reg)
@@ -126,9 +144,18 @@ class StyleGAN2GGDRLoss(Loss):
             name = 'Dreal_Dr1' if do_Dmain and do_Dr1 else 'Dreal' if do_Dmain else 'Dr1'
             with torch.autograd.profiler.record_function(name + '_forward'):
                 real_img_tmp = real_img.detach().requires_grad_(do_Dr1)
-                real_logits, aug_recon_real_fmaps, _, _ = self.run_D(real_img_tmp, real_c, sync=sync)
+                real_logits, aug_recon_real_fmaps, _, _, aux_D_fmap = self.run_D(real_img_tmp, real_c, aux_fmap=True, sync=sync)
                 training_stats.report('Loss/scores/real', real_logits)
                 training_stats.report('Loss/signs/real', real_logits.sign())
+
+                if self.parser is not None:
+                    with torch.no_grad():
+                        real_img = F.interpolate(real_img, (512, 512), mode='bilinear', align_corners=True)
+                        parser_fmap = self.parser(real_img)[-1].detach()
+                    loss_Daux = self.cosine_distance(parser_fmap, aux_D_fmap) * 10
+                    training_stats.report(f'Loss/D/aux_r', loss_Daux)
+                else:
+                    loss_Daux = aux_D_fmap[:, 0, 0, 0] * 0
 
                 loss_Dreal = 0
                 if do_Dmain:
@@ -148,7 +175,7 @@ class StyleGAN2GGDRLoss(Loss):
                 loss_not_used = aug_recon_real_fmaps[max(aug_recon_real_fmaps.keys())][:, 0, 0, 0] * 0
 
             with torch.autograd.profiler.record_function(name + '_backward'):
-                (loss_Dreal + loss_Dr1 + real_logits * 0 + loss_not_used * 0).mean().mul(gain).backward()
+                (loss_Dreal + loss_Dr1 + real_logits * 0 + loss_Daux + loss_not_used * 0).mean().mul(gain).backward()
 
     def cosine_distance(self, x, y):
         return 1. - F.cosine_similarity(x, y).mean()

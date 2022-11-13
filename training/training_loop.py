@@ -21,6 +21,8 @@ from torch_utils import training_stats
 from torch_utils.ops import conv2d_gradfix
 from torch_utils.ops import grid_sample_gradfix
 
+from face_parser.model import BiSeNet
+
 import legacy
 from metrics import metric_main
 
@@ -119,7 +121,8 @@ def training_loop(
     abort_fn                = None,     # Callback function for determining whether to abort training. Must return consistent results across ranks.
     progress_fn             = None,     # Callback function for updating training progress. Called for all ranks.
     use_nsml                = None,
-    reg_type = None,
+    reg_type                = None,
+    parser                  = None
 ):
     # Initialize.
     start_time = time.time()
@@ -154,6 +157,12 @@ def training_loop(
 
     G_ema = copy.deepcopy(G).eval()
     D = dnnlib.util.construct_class_by_name(**D_kwargs, **common_kwargs).train().requires_grad_(False).to(device) # subclass of torch.nn.Module
+
+    P = None
+    if parser is not None:
+        P = BiSeNet(n_classes=19).requires_grad_(False).to(device)
+        P.load_state_dict(torch.load(parser))
+        P = P.eval()
 
     # Resume from existing pickle.
     if (resume_pkl is not None) and (rank == 0):
@@ -200,7 +209,7 @@ def training_loop(
     # Setup training phases.
     if rank == 0:
         print('Setting up training phases...')
-    loss = dnnlib.util.construct_class_by_name(device=device, **ddp_modules, **loss_kwargs) # subclass of training.loss.Loss
+    loss = dnnlib.util.construct_class_by_name(device=device, **ddp_modules, P=P, **loss_kwargs) # subclass of training.loss.Loss
     phases = []
 
     for name, module, opt_kwargs, reg_interval in [('G', G, G_opt_kwargs, G_reg_interval), ('D', D, D_opt_kwargs, D_reg_interval)]:
@@ -345,6 +354,15 @@ def training_loop(
         fields += [f"gpumem {training_stats.report0('Resources/peak_gpu_mem_gb', torch.cuda.max_memory_allocated(device) / 2**30):<6.2f}"]
         torch.cuda.reset_peak_memory_stats()
         fields += [f"augment {training_stats.report0('Progress/augment', float(augment_pipe.p.cpu()) if augment_pipe is not None else 0):.3f}"]
+        fields += [f"G {stats_collector.mean('Loss/G/loss'):.4f}"]
+        fields += [f"G_pl {stats_collector.mean('Loss/pl_penalty'):.4f}"]
+        fields += [f"D {stats_collector.mean('Loss/D/loss'):.4f}"]
+        fields += [f"D_ggdr {stats_collector.mean('Loss/D/loss_gen_reg'):.4f}"]
+        if parser is not None:
+            fields += [f"D_auxR {stats_collector.mean('Loss/D/aux_r'):.4f}"]
+            fields += [f"D_auxG {stats_collector.mean('Loss/D/aux_g'):.4f}"]
+        fields += [f"D_r1 {stats_collector.mean('Loss/D/reg'):.4f}"]
+
         training_stats.report0('Timing/total_hours', (tick_end_time - start_time) / (60 * 60))
         training_stats.report0('Timing/total_days', (tick_end_time - start_time) / (24 * 60 * 60))
         if rank == 0:

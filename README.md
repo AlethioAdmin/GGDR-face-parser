@@ -1,58 +1,42 @@
-# GGDR - Generator-Guided Regularization for Discriminator (Official PyTorch Implementation)
-**[Generator Knows What Discriminator Should Learn in Unconditional GANs (ECCV 2022)](http://arxiv.org/abs/2207.13320)** \
-Gayoung Lee<sup>1</sup>, Hyunsu Kim<sup>1</sup>, Junho Kim<sup>1</sup>, Seonghyeon Kim<sup>2</sup>, Jung-Woo Ha<sup>1</sup>, Yunjey Choi<sup>1</sup>
-
-<sup>1</sup>NAVER AI Lab, <sup>2</sup>NAVER CLOVA
-
-<div align="center">
-  <img src="figures/model.png" width="70%" height="70%">
-</div>
-
-> **Abstract** *Recent conditional image generation methods benefit from dense supervision such as segmentation label maps to achieve high-fidelity. However, it is rarely explored to employ dense supervision for unconditional image generation. Here we explore the efficacy of dense supervision in unconditional generation and find generator feature maps can be an alternative of cost-expensive semantic label maps. From our empirical evidences, we propose a new **generator-guided discriminator regularization (GGDR)** in which the generator feature maps supervise the discriminator to have rich semantic representations in unconditional generation. In specific, we employ an encoder-decoder architecture for discriminator, which is trained to reconstruct the generator feature maps given fake images as inputs. Extensive experiments on mulitple datasets show that our GGDR consistently improves the performance of baseline methods in terms of quantitative and qualitative aspects. Code will be publicly available for the research community.*
-
+# GGDR + Face parser
+Alethio Inc.
 ## Credit
-We attach GGDR to [StyleGAN2-ADA-pytorch](https://github.com/NVlabs/stylegan2-ada-pytorch), so heavily brought their codes.
+We attach real image regularization using face parser's feature maps to GGDR. This code is heavily based on
+ - [GGDR](https://github.com/naver-ai/GGDR)
+ - [StyleGAN2-ADA-pytorch](https://github.com/NVlabs/stylegan2-ada-pytorch)
+ - [face-parsing.PyTorch](https://github.com/zllrunning/face-parsing.PyTorch)
 
 ## Usage
-Usage of this repository is almost same with [StyleGAN2-ADA-pytorch](https://github.com/NVlabs/stylegan2-ada-pytorch) except GGDR option. See their repository for more detailed instructions.
+Usage of this repository is almost same with [StyleGAN2-ADA-pytorch](https://github.com/NVlabs/stylegan2-ada-pytorch) except GGDR & face parser option. See their repository for more detailed instructions.
+
+- Download checkpoints of [face-parsing.PyTorch](https://github.com/zllrunning/face-parsing.PyTorch)
 
 #### Training StyleGAN2-ADA with GGDR
 ```
-> python train.py --outdir=training-runs  --reg_type=ggdr --ggdr_res=64 --gpus=8 --cfg=paper256 --data=./datasets/ffhq256.zip
+> python train.py --outdir=training-runs  --parser=/path/to/parser/ckpt/model.pth --reg_type=ggdr --ggdr_res=64 --gpus=8 --cfg=paper256 --data=./datasets/ffhq256.zip
 ```
-Belows are some additional arguments can be customized. 
+Belows are some additional arguments can be customized.
+- ```--parser=/path/to/parser/ckpt/model.pth``` Specify checkpoints of the face parser. (default: disabled) 
 - ```--reg_type=ggdr``` Enable GGDR (default: disabled)
 - ```--ggdr_res=64``` Set target feature map by given resolution for GGDR (default: 64). If you use smaller images(e.g. cifar10), it is recommended to set this $(resolution) / 4 (e.g. 8 for cifar10).
 - ```--aug=noaug``` Disables ADA (default: enabled)
 - ```--mirror=1``` Enables x-flips (default: disabled)
 
 #### Inference with trained model
+- Download checkpoints [here](https://kr.object.ncloudstorage.com/backup-bucket/public/ggdrface-network-snapshot.pkl)
 ```
 > python generate.py --outdir=out --seeds=100-200 --network=PATH_TO_MODEL
 ```
 
 ## Results
-### Selective samples in the paper
-<div align="left">
-  <img src="figures/sample.png" width="70%" height="70%">
-</div>
+- FID 3.10669 for FFHQ 256
 
-### Discriminator feature map visualization
+### Selective samples
 <div align="left">
-  <img src="figures/d_vis.png" width="70%" height="70%">
+  <img src="figures/sample-face.png" width="70%" height="70%">
 </div>
-
 
 
 ## License
-Licensed under NVIDIA Source Code License for StyleGAN2 with Adaptive Discriminator Augmentation (ADA).
-
-## Citation
-```bibtex
-@inproceedings{lee2022ggdr,
-  title={Generator Knows What Discriminator Should Learn in Unconditional GANs},
-  author={Lee, Gayoung and Kim, Hyunsu and Kim, Junho and Kim, Seonghyeon and Ha, Jung-Woo and Choi, Yunjey},
-  booktitle={ECCV},
-  year={2022}
-}
-```
+- Licensed under NVIDIA Source Code License for StyleGAN2 with Adaptive Discriminator Augmentation (ADA).
+- Licensed under MIT License face-parsing.PyTorch
